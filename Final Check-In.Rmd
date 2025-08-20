@@ -1,0 +1,306 @@
+---
+title: "Final Check-In"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+date: "2025-08-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(data.table)
+library(glue)
+library(knitr)
+library(kableExtra)
+
+filename <- "/Users/nupoormarwah/Downloads/QBS103_GSE157103_series_matrix-1.csv"
+meta_data <- fread(filename)
+
+filename <- "/Users/nupoormarwah/Downloads/QBS103_GSE157103_genes.csv"
+
+#Makes so that V1 col that contains the gene names are now the row names
+gene_expr <- fread(filename) %>%
+  column_to_rownames("V1") %>%
+ #Transposing with make the table be 126 observations by 100 observations
+  t() %>%
+  data.frame()
+
+#Create combined data frame. Now we have one single data frame with all the data. I didn't initially know how to do this, so I googled "how to combine objects into rows and columns in R" and used the following website for reference: https://www.rdocumentation.org/packages/base/versions/3.6.2/topics/cbind
+comb_df <- cbind(meta_data, gene_expr)
+
+comb_df <- comb_df %>%
+  mutate(
+    #age = as.numeric(age), 
+    `ferritin(ng/ml)` = as.numeric(`ferritin(ng/ml)`),
+  ) %>%
+  data.frame()
+```
+```{r}
+#Checking for normality via histograms. They are all skewed so we want median and IQR for summary stats. Note: These were only for my reference, so that I knew which metrics to report.
+hist(comb_df$charlson_score)
+hist(comb_df$`ferritin.ng.ml.`) 
+hist(comb_df$ventilator.free_days)
+
+```
+
+```{r}
+num_vector <- c("charlson_score", "ferritin.ng.ml.", "ventilator.free_days")
+cat_vector <- c("disease_status", "icu_status")
+
+#Categorical summary stats
+cat_sum <- comb_df %>%
+  select(sex, all_of(cat_vector)) %>%
+  pivot_longer(-sex, names_to = "variable", values_to = "category") %>%
+  group_by(sex, variable) %>%
+  mutate(group_total = n()) %>%
+  group_by(sex, variable, category, group_total) %>%
+  summarize(n = n(), ) %>%
+  
+  mutate(
+    perc = round(100 * (n/group_total), 2), 
+    format_n = glue("{n} ({perc})")
+    ) %>%
+  #Exclude those columns
+  select(-n, -perc) %>%
+  pivot_wider(
+    names_from = c(variable, category),
+    values_from = c(format_n),
+    #Allows for string interpolation
+    names_glue = "{.value}_{variable}_{category}"
+  )
+colnames(cat_sum) <- c("Sex", "Count", "COVID-19: n (%)", "Non-COVID-19: n (%)", "ICU: n (%)", "Non-ICU: n (%)")
+  
+#Continuous summary stats
+num_sum <- comb_df %>%
+  select(sex, all_of(num_vector)) %>%
+  group_by(sex) %>%
+  summarize(
+    across(
+      all_of(num_vector),
+      #.x is placeholder for columns. For example, median and IQR for Charlson Score and then assign it to the next variable, etc.
+      list(median = ~ median(.x, na.rm = TRUE), IQR = ~ IQR(.x, na.rm = TRUE)), 
+      #"fn" stands for function (median or IQR). It will give the name of that function to that column. ".col" is the column name you are calculating the value for.
+      .names = "{.fn} {.col}"
+    )
+  )
+colnames(num_sum) <- c("Sex", "Charlson Score: Median", "Charlson Score: IQR", 
+                       "Ferritin (ng/mL): Median", "Ferritin (ng/mL): IQR", 
+                       "Ventilator-Free Days: Median", "Ventilator-Free Days: IQR")
+
+#Final table (both tables merged)
+final <- cat_sum %>%
+  left_join(num_sum, by = "Sex") %>%
+  mutate(
+    Sex = factor(
+      Sex, 
+      levels = c("female", "male", "unknown"),
+      labels = c("Female", "Male", "Unknown")
+    )
+  )
+```
+
+
+```{r}
+#Final table formatting
+kable(final, caption = "Table 1: Multiple Covariates Stratified by Sex") %>%
+  kable_classic(full_width = TRUE, position = "center") %>%
+  column_spec(1:ncol(final), width = "20em")
+```
+
+
+```{r}
+#First layer in ggplot function is data. Next is mapping to tell R where to put the cols and rows on the plot. "aes" is part of the mapping layer and tells R what to make the x and y-axis. Since this is a histogram, we only need to assign x-axis
+p1 <- ggplot(data = comb_df, mapping = aes(x = AASDHPPT)) + 
+  #After mapping, the next step is to add a geom layer to tell R what type of plot you want to make. You can use "fill" to change the color of the entire shape or "color" to change the outline 
+  geom_histogram(fill = "purple", col = "black") +
+  #"labs" gives labels to x and y-axis and you can include a title
+  labs(x = "AASDHPPT Expression", y = "Count", title = "Histogram of AASDHPPT Gene Expression") +
+  #We can choose any theme. BW gives black axis and text and white background
+  theme_bw() +
+  #Use theme again to center title and bold it. "Element text" function says that the element in the plot title is a text element. "hjust" is horizontal adjustment (0 = all the way to the left, 1 = all the way to the right, so center = 0.50)
+  theme(
+     plot.title = element_text(face = "bold", hjust = 0.50)
+  )
+
+p1
+
+ggsave("Gene Histogram.png", plot = p1)
+```
+```{r}
+#First layer in ggplot function is data. Next is mapping to tell R where to put the cols and rows on the plot. "aes" is part of the mapping layer and tells R what to make the x- and y-axis. Since this is a scatterplot, we need both x- and y-axis. I chose Charlson Score as the continuous variable here
+p2 <- ggplot(data = comb_df, mapping = aes(x = AASDHPPT, y = charlson_score)) + 
+  #After mapping, the next step is to add a geom layer to tell R what type of plot you want to make. You can use "color" to change the color of the dots in the scatterplot 
+  geom_point(color = "blue", size = 2) +
+  #"labs" gives labels to x and y-axis and you can include a title
+  labs(x = "AASDHPPT Expression", y = "Charlson Score", title = "Scatterplot of Charlson Score vs. AASDHPPT Gene Expression") +
+  #We can choose any theme. BW gives black axis and text and white background
+  theme_bw() +
+  #Use theme again to center title and bold it. "Element text" function says that the element in the plot title is a text element. "hjust" is horizontal adjustment (0 = all the way to the left, 1 = all the way to the right, so center = 0.50)
+  theme(
+     plot.title = element_text(face = "bold", hjust = 0.50)
+  )
+
+p2
+
+ggsave("Gene Histogram.png", plot = p2)
+```
+
+```{r}
+comb_df %>%
+  mutate(
+    sex = factor(
+      sex, 
+      levels = c("female", "male", "unknown"),
+      labels = c("Female", "Male", "Unknown")
+    ), 
+    disease_status = factor(
+      disease_status,
+      levels = c("disease state: COVID-19", "disease state: non-COVID-19"),
+      labels = c("Disease State: COVID-19", "Disease State: Non-COVID-19")
+    )
+  ) %>%
+#First layer in ggplot function is data. Next is mapping to tell R where to put the cols and rows on the plot. "aes" is part of the mapping layer and tells R what to make the x and y-axis. Since this is a boxplot, we need both x- and y-axis. I chose sex and disease status as my categorical variables
+ggplot(mapping = aes(x = sex, y = AASDHPPT, fill = sex)) + 
+  #After mapping, the next step is to add a geom layer to tell R what type of plot you want to make
+  geom_boxplot() +
+  #Add a facet. A facet lets us separate based on the values of a variable. Here, it would be the "disease_status" var
+  facet_wrap(~disease_status) +
+  #"labs" gives labels to x and y-axis and you can include a title. To change the legend, use "fill" since we used that up top
+  labs(x = "Sex", y = "AASDHPPT Gene Expression", title = "Boxplot of Gene Expression by Disease Status and Sex", 
+       fill = "Sex") +
+  #We can choose any theme. BW gives black axis and text and white background
+  theme_bw() +
+  #Use theme again to center title and bold it. "Element text" function says that the element in the plot title is a text element. "hjust" is horizontal adjustment (0 = all the way to the left, 1 = all the way to the right, so center = 0.50)
+  theme(
+     plot.title = element_text(face = "bold", hjust = 0.50)
+  )
+```
+```{r}
+library(ComplexHeatmap)
+
+genes <- c("AAGAB", "AAK1", "AAMDC", "AAMP", "AAR2", "AARS1", "AASDH", "AAAS", "AACS", "AADAC")
+expression_mat <- as.matrix(comb_df[,genes])
+
+
+annotations <- data.frame(
+  Sex = factor(
+    comb_df$sex,
+    levels = c("female", "male", "unknown"),
+    labels = c("Female", "Male", "Unknown")
+    ),
+  Disease_Status = factor(
+    comb_df$disease_status,
+    levels = c("disease state: COVID-19", "disease state: non-COVID-19"),
+    labels = c("Disease State: COVID-19", "Disease State: Non-COVID-19")
+    )
+  
+)
+
+rownames(annotations) <- comb_df$participant_id
+
+color_sex <- setNames(c("pink", "blue", "gray"), levels(annotations$Sex))
+color_ds <- setNames(c("purple", "red"), levels(annotations$Disease_Status))
+hm_annot <- rowAnnotation(
+  Sex = annotations$Sex, 
+  `Disease Status` = annotations$Disease_Status,
+  col = list(Sex = color_sex, `Disease Status` = color_ds)
+)
+
+Heatmap(
+  expression_mat,
+  name = "Gene Expression", 
+  column_title = "Heatmap of the Expression of 10 Genes", 
+  right_annotation = hm_annot,
+  cluster_rows = TRUE,
+  cluster_columns = TRUE
+)
+
+```
+
+
+#Principal Component Analysis Plot (PCA Plot)
+```{r}
+pc_genes <- colnames(gene_expr)
+#Apply does variance function on every column of gene expression data frame. After calculating variance, will check if it is equal to 0. If not 0, it will return True. If 0, it will return False. Indexing so that we only get columns where variance isn't equal to 0
+filt_gene_expr <- gene_expr[, apply(gene_expr, 2, var) != 0]
+#Based off variation in your data. Columns will often have different levels of variation. We want to scale our coumns to have similar levels of variation
+pca_res <- prcomp(filt_gene_expr, scale = TRUE)
+```
+
+```{r}
+pca_df <- as.data.frame(pca_res$x)
+pca_df <- cbind(comb_df[, c("disease_status", "sex")], pca_df)
+
+pca_df %>%
+  mutate(
+    sex = factor(
+      sex, 
+      levels = c("female", "male", "unknown"),
+      labels = c("Female", "Male", "Unknown")
+    ), 
+    disease_status = factor(
+      disease_status,
+      levels = c("disease state: COVID-19", "disease state: non-COVID-19"),
+      labels = c("Disease State: COVID-19", "Disease State: Non-COVID-19")
+    )
+  ) %>%
+ggplot(mapping = aes(x = PC1, y = PC2, color = disease_status)) + 
+  #After mapping, the next step is to add a geom layer to tell R what type of plot you want to make
+  geom_point() +
+  #"labs" gives labels to x and y-axis and you can include a title.
+  labs(x = "PC1", y = "PC2", title = "PCA Plot of Gene Expression Across Individuals", 
+       color = "Disease Status") +
+  #We can choose any theme. BW gives black axis and text and white background
+  theme_bw() +
+  #Use theme again to center title and bold it. "Element text" function says that the element in the plot title is a text element. "hjust" is horizontal adjustment (0 = all the way to the left, 1 = all the way to the right, so center = 0.50)
+  theme(
+     plot.title = element_text(face = "bold", hjust = 0.50)
+  )
+
+```
+```{r}
+pca_df %>%
+  mutate(
+    sex = factor(
+      sex, 
+      levels = c("female", "male", "unknown"),
+      labels = c("Female", "Male", "Unknown")
+    ), 
+    disease_status = factor(
+      disease_status,
+      levels = c("disease state: COVID-19", "disease state: non-COVID-19"),
+      labels = c("Disease State: COVID-19", "Disease State: Non-COVID-19")
+    )
+  ) %>%
+ggplot(mapping = aes(x = PC1, y = PC2, color = sex)) + 
+  #After mapping, the next step is to add a geom layer to tell R what type of plot you want to make
+  geom_point() +
+  #"labs" gives labels to x and y-axis and you can include a title.
+  labs(x = "PC1", y = "PC2", title = "PCA Plot of Gene Expression Across Individuals", 
+       color = "Sex") +
+  #We can choose any theme. BW gives black axis and text and white background
+  theme_bw() +
+  #Use theme again to center title and bold it. "Element text" function says that the element in the plot title is a text element. "hjust" is horizontal adjustment (0 = all the way to the left, 1 = all the way to the right, so center = 0.50)
+  theme(
+     plot.title = element_text(face = "bold", hjust = 0.50)
+  )
+
+```
+
+```{r}
+#Citing R packages
+citation("ggplot2")
+citation("tidyverse")
+citation("data.table")
+citation("glue")
+citation("knitr")
+citation("kableExtra")
+citation("ComplexHeatmap")
+```
+
